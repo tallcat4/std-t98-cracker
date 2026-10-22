@@ -1,0 +1,17 @@
+{
+  "model_type": "hybrid",
+  "n_frames": 20,
+  "bits_per_frame": 49,
+  "cnn_channels": [
+    64,
+    128,
+    256
+  ],
+  "lstm_hidden": 128,
+  "lstm_layers": 2,
+  "classifier_hidden": 128,
+  "num_classes": 2,
+  "dropout": 0.3,
+  "best_val_acc": 1.0,
+  "epochs": 100
+}

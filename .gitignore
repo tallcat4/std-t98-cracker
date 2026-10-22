@@ -1,0 +1,14 @@
+/build*/
+/dist/
+/.venv/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+*.dll
+*.so
+*.dylib
+*.burst
+*.ambe
+*.llr
+*.wav
+*.result.json

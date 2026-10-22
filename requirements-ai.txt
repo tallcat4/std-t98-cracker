@@ -1,0 +1,3 @@
+-r requirements.txt
+torch>=2
+safetensors>=0.4

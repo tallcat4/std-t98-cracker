@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.20)
+project(std_t98_cracker VERSION 0.1.0 LANGUAGES C)
+set(CMAKE_C_STANDARD 99)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+add_library(t98_fec SHARED
+  vendor/blip25c/src/fec.c
+  vendor/blip25c/src/b25_golay.c
+)
+set_target_properties(t98_fec PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON PREFIX "")
+if(MSVC)
+  target_compile_options(t98_fec PRIVATE /utf-8 /w)
+else()
+  target_compile_options(t98_fec PRIVATE -w)
+endif()
+if(MINGW)
+  target_link_options(t98_fec PRIVATE -static-libgcc -static)
+endif()
+install(TARGETS t98_fec RUNTIME DESTINATION std_t98_cracker LIBRARY DESTINATION std_t98_cracker)

@@ -1,0 +1,7 @@
+{
+  "input_dim": 980,
+  "hidden_dim": 128,
+  "num_classes": 2,
+  "best_val_acc": 0.9966661015991412,
+  "epochs": 50
+}

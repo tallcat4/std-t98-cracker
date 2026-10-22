@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "std-t98-cracker"
+version = "0.1.0"
+description = "Offline STD-T98 burst analysis: silence solver and optional AI key search"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+ai = ["torch>=2", "safetensors>=0.4"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+std-t98-cracker = "std_t98_cracker.cli:main"
+
+[tool.setuptools]
+packages = ["std_t98_cracker"]
+
+[tool.setuptools.package-data]
+std_t98_cracker = ["*.dll", "*.so", "*.dylib", "models/*.json", "models/*.safetensors"]
