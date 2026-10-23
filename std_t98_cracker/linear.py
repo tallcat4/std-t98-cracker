@@ -27,19 +27,23 @@ def matches_silence(bits):
     return True
 
 
+def linear_equations(sequence):
+    basis_pn = np.array([sequence.bits(1 << i) for i in range(15)])
+    if np.any(sequence.bits(0)):
+        raise ValueError("Linear solver requires a linear sequence with generate(0) == 0")
+    # Detect accidental nonlinear generators; candidates are also checked
+    # against the actual generator before acceptance.
+    for key in (3, 7, 12345, 32767):
+        predicted = np.bitwise_xor.reduce(basis_pn[[i for i in range(15) if key & (1 << i)]], axis=0)
+        if not np.array_equal(predicted, sequence.bits(key)):
+            raise ValueError("Sequence is not linear over GF(2); use AI search or an explicit key")
+    return [sum(int(basis_pn[b, t]) << b for b in range(15)) for t in range(196)]
+
+
 class SilenceSolver:
     def __init__(self, sequence=None):
         self.sequence = sequence or Sequence()
-        basis_pn = np.array([self.sequence.bits(1 << i) for i in range(15)])
-        if np.any(self.sequence.bits(0)):
-            raise ValueError("Linear solver requires a linear sequence with generate(0) == 0")
-        # Detect accidental nonlinear generators; each candidate is also checked
-        # against the actual generator before it can be accepted.
-        for key in (3, 7, 12345, 32767):
-            predicted = np.bitwise_xor.reduce(basis_pn[[i for i in range(15) if key & (1 << i)]], axis=0)
-            if not np.array_equal(predicted, self.sequence.bits(key)):
-                raise ValueError("Sequence is not linear over GF(2); use AI search or an explicit key")
-        equations = [sum(int(basis_pn[b, t]) << b for b in range(15)) for t in range(196)]
+        equations = linear_equations(self.sequence)
         self.solvers = []
         for phase in range(4):
             eq = [equations[phase * 49 + pos] for pos in POSITIONS]

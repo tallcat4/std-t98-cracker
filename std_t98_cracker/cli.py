@@ -9,6 +9,7 @@ import numpy as np
 from .burst import read_bursts, read_llr, unpack49, pack49, write_bursts
 from .fec import FecDecoder
 from .linear import SilenceSolver
+from .unvoiced import UnvoicedSolver
 from .sequence import load_sequence
 
 
@@ -34,7 +35,8 @@ def _write_json(path, report):
 def _crack(args):
     sequence = load_sequence(args.sequence)
     frames, valid, corrected = _decoded(args)
-    solver = SilenceSolver(sequence) if args.method == "linear" else None
+    solver_type = UnvoicedSolver if args.silence_profile == "unvoiced-124" else SilenceSolver
+    solver = solver_type(sequence) if args.method == "linear" else None
     ai = None
     windows = []
     # Non-overlapping windows keep key changes visible and bound AI memory/work.
@@ -68,7 +70,8 @@ def _crack(args):
         "input": str(Path(args.input)), "sequence": sequence.name, "bursts": len(frames),
         "uncorrectable_frames": int((~valid).sum()), "corrected_bits": corrected,
         "keys": keys, "windows": windows,
-        "note": "AI results are candidates. Linear recovery requires the measured AMBE-3000R silence profile and evidence at two different TCH phases. Key 0 means plaintext.",
+        "silence_profile": (args.silence_profile or "ambe3000r") if solver else None,
+        "note": "AI results are candidates. Linear recovery requires the selected profile: ambe3000r needs two distinct TCH phases; unvoiced-124 needs three phases per burst and three supporting bursts. Key 0 means plaintext.",
     }
     _write_json(args.json, report)
     return 0 if keys else 2
@@ -104,6 +107,7 @@ def main(argv=None):
         command.add_argument("--sequence", help="Python file defining generate(key) -> 196 bits")
         if name == "crack":
             command.add_argument("--method", choices=("linear", "ai"), default="linear")
+            command.add_argument("--silence-profile", choices=("ambe3000r", "unvoiced-124"), help="Linear only: measured SPEAR profile (default) or experimental three-phase b0=124,b1=16 profile; see LINEAR_PROFILES.md")
             command.add_argument("--window", type=int, default=10, help="Bursts per independent search window (default 10)")
             command.add_argument("--models-dir")
             command.add_argument("--threads", type=int, default=4)
@@ -118,6 +122,8 @@ def main(argv=None):
             print(json.dumps({"bits_per_frame": bits, "bursts": len(payload), "frames": len(payload)*4, "traffic_seconds": len(payload)*.08}, indent=2))
             return 0
         if args.command == "crack":
+            if args.method != "linear" and args.silence_profile is not None:
+                raise ValueError("--silence-profile applies only to --method linear")
             if not 1 <= args.window <= 10000 or not 1 <= args.threads <= 256:
                 raise ValueError("--window must be 1..10000 and --threads 1..256")
             if args.json and Path(args.json).exists():
