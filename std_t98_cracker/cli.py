@@ -1,6 +1,8 @@
 """Small offline command interface. Key search never modifies the capture."""
 import argparse
+from contextlib import nullcontext
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -8,8 +10,7 @@ import numpy as np
 
 from .burst import read_bursts, read_llr, unpack49, pack49, write_bursts
 from .fec import FecDecoder
-from .linear import SilenceSolver
-from .unvoiced import UnvoicedSolver
+from .linear import SilenceSolver, DEFAULT_THRESHOLD, DEFAULT_MARGIN
 from .sequence import load_sequence
 
 
@@ -35,43 +36,58 @@ def _write_json(path, report):
 def _crack(args):
     sequence = load_sequence(args.sequence)
     frames, valid, corrected = _decoded(args)
-    solver_type = UnvoicedSolver if args.silence_profile == "unvoiced-124" else SilenceSolver
-    solver = solver_type(sequence) if args.method == "linear" else None
+    solver = SilenceSolver(sequence) if args.method == "linear" else None
     ai = None
     windows = []
-    # Non-overlapping windows keep key changes visible and bound AI memory/work.
-    for start in range(0, len(frames), args.window):
-        end = min(len(frames), start + args.window)
-        chunk, good = frames[start:end], valid[start:end]
-        key = solver.recover(chunk, good) if solver else None
-        method = "linear" if key is not None else None
-        if args.method == "ai":
-            # Models were trained on 5-burst blocks, not mixtures across gaps.
-            # Skip corrupt bursts without compressing time or changing phase.
-            run_start = next((i for i in range(max(0, len(chunk)-4)) if good[i:i+5].all()), None)
-            if run_start is not None:
-                if ai is None:
-                    import torch
-                    from .ai import SecretCracker
-                    torch.set_num_threads(args.threads)
-                    model_dir = Path(args.models_dir) if args.models_dir else Path(__file__).resolve().parent / "models"
-                    ai = SecretCracker(model_dir/"ambe2_ffnn.safetensors", model_dir/"ambe2_hybrid.safetensors", generate=sequence.bits)
-                count = 5
-                if len(chunk) >= run_start+10 and good[run_start:run_start+10].all():
-                    count = 10
-                ai.global_cache.clear()  # Each requested window is an independent search.
-                result = ai.resolve_key(0, pack49(chunk[run_start:run_start+count]).tobytes(), count)
-                if result.resolved_key:
-                    key, method = result.resolved_key, "ai-candidate"
-        windows.append({"first_burst": start, "end_burst": end, "key": key, "method": method})
-        print(f"bursts {start}:{end}: {key if key is not None else 'no match'} ({method or args.method})", file=sys.stderr)
+    # A linear input is one caller-delimited session unless windows are requested.
+    window_size = args.window or len(frames)
+    with (Path(args.trace).open('x', encoding='utf-8') if args.trace else nullcontext()) as trace:
+        for start in range(0, len(frames), window_size):
+            end = min(len(frames), start + window_size)
+            chunk, good = frames[start:end], valid[start:end]
+            key, analysis, first_confirmation = None, None, None
+            if solver:
+                session = solver.new_session(args.threshold, args.margin)
+                for offset, (burst, fec_good) in enumerate(zip(chunk, good)):
+                    analysis = session.push(burst, fec_good)
+                    if first_confirmation is None and analysis['key'] is not None:
+                        first_confirmation = dict(key=analysis['key'], end_burst=start+offset+1,
+                                                  traffic_seconds=(offset+1)*.08,
+                                                  score=analysis['score'], margin=analysis['margin'])
+                    if trace:
+                        trace.write(json.dumps(dict(first_burst=start, end_burst=start+offset+1, **analysis))+'\n')
+                key = analysis['key']
+            method = "linear" if key is not None else None
+            if args.method == "ai":
+                # Models were trained on 5-burst blocks, not mixtures across gaps.
+                # Skip corrupt bursts without compressing time or changing phase.
+                run_start = next((i for i in range(max(0, len(chunk)-4)) if good[i:i+5].all()), None)
+                if run_start is not None:
+                    if ai is None:
+                        import torch
+                        from .ai import SecretCracker
+                        torch.set_num_threads(args.threads)
+                        model_dir = Path(args.models_dir) if args.models_dir else Path(__file__).resolve().parent / "models"
+                        ai = SecretCracker(model_dir/"ambe2_ffnn.safetensors", model_dir/"ambe2_hybrid.safetensors", generate=sequence.bits)
+                    count = 5
+                    if len(chunk) >= run_start+10 and good[run_start:run_start+10].all():
+                        count = 10
+                    ai.global_cache.clear()  # Each requested window is an independent search.
+                    result = ai.resolve_key(0, pack49(chunk[run_start:run_start+count]).tobytes(), count)
+                    if result.resolved_key:
+                        key, method = result.resolved_key, "ai-candidate"
+            window = {"first_burst": start, "end_burst": end, "key": key, "method": method}
+            if analysis is not None:
+                window.update(candidate=analysis['candidate'], score=analysis['score'], margin=analysis['margin'],
+                              threshold=args.threshold, required_margin=args.margin, first_confirmation=first_confirmation)
+            windows.append(window)
+            print(f"bursts {start}:{end}: {key if key is not None else 'no match'} ({method or args.method})", file=sys.stderr)
     keys = sorted({w["key"] for w in windows if w["key"] is not None})
     report = {
         "input": str(Path(args.input)), "sequence": sequence.name, "bursts": len(frames),
         "uncorrectable_frames": int((~valid).sum()), "corrected_bits": corrected,
         "keys": keys, "windows": windows,
-        "silence_profile": (args.silence_profile or "ambe3000r") if solver else None,
-        "note": "AI results are candidates. Linear recovery requires the selected profile: ambe3000r needs two distinct TCH phases; unvoiced-124 needs three phases per burst and three supporting bursts. Key 0 means plaintext.",
+        "note": "Linear scores are evidence units, not probabilities. First confirmation can be retracted by later evidence; key is the final session decision. AI results are candidates. Key 0 means plaintext.",
     }
     _write_json(args.json, report)
     return 0 if keys else 2
@@ -107,8 +123,10 @@ def main(argv=None):
         command.add_argument("--sequence", help="Python file defining generate(key) -> 196 bits")
         if name == "crack":
             command.add_argument("--method", choices=("linear", "ai"), default="linear")
-            command.add_argument("--silence-profile", choices=("ambe3000r", "unvoiced-124"), help="Linear only: measured SPEAR profile (default) or experimental three-phase b0=124,b1=16 profile; see LINEAR_PROFILES.md")
-            command.add_argument("--window", type=int, default=10, help="Bursts per independent search window (default 10)")
+            command.add_argument("--window", type=int, help="Bursts per independent session (default: linear entire file, AI 10)")
+            command.add_argument("--threshold", type=float, help="Linear evidence threshold (default 20; not a probability)")
+            command.add_argument("--margin", type=float, help="Linear lead over the runner-up (default 6)")
+            command.add_argument("--trace", help="Write each incremental linear decision to a new JSONL file")
             command.add_argument("--models-dir")
             command.add_argument("--threads", type=int, default=4)
             command.add_argument("--json", help="Also save results to a new JSON file")
@@ -122,12 +140,22 @@ def main(argv=None):
             print(json.dumps({"bits_per_frame": bits, "bursts": len(payload), "frames": len(payload)*4, "traffic_seconds": len(payload)*.08}, indent=2))
             return 0
         if args.command == "crack":
-            if args.method != "linear" and args.silence_profile is not None:
-                raise ValueError("--silence-profile applies only to --method linear")
-            if not 1 <= args.window <= 10000 or not 1 <= args.threads <= 256:
+            if args.method == 'ai' and (args.threshold is not None or args.margin is not None or args.trace):
+                raise ValueError('--threshold, --margin and --trace apply only to --method linear')
+            if args.window is None and args.method == 'ai':
+                args.window = 10
+            if (args.window is not None and not 1 <= args.window <= 10000) or not 1 <= args.threads <= 256:
                 raise ValueError("--window must be 1..10000 and --threads 1..256")
+            args.threshold = DEFAULT_THRESHOLD if args.threshold is None else args.threshold
+            args.margin = DEFAULT_MARGIN if args.margin is None else args.margin
+            if not math.isfinite(args.threshold) or args.threshold <= 0 or not math.isfinite(args.margin) or args.margin < 0:
+                raise ValueError('--threshold must be finite and positive; --margin must be finite and nonnegative')
             if args.json and Path(args.json).exists():
                 raise ValueError("JSON output already exists; choose a new path")
+            if args.trace and Path(args.trace).exists():
+                raise ValueError('Trace output already exists; choose a new path')
+            if args.json and args.trace and Path(args.json).resolve() == Path(args.trace).resolve():
+                raise ValueError('--json and --trace must use different paths')
             return _crack(args)
         return _descramble(args)
     except (ValueError, RuntimeError, OSError, ImportError) as exc:

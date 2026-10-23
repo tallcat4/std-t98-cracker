@@ -36,7 +36,9 @@ class SolverTests(unittest.TestCase):
     def test_confirmation_conflicts_and_invalid_frames(self):
         a, b = self.pair(12345), self.pair(777)
         mask = np.array([[1, 0, 0, 0]], dtype=bool)
-        self.assertIsNone(self.solver.recover(a[None], mask))
+        # A full strict profile carries enough evidence at the default threshold.
+        self.assertEqual(self.solver.recover(a[None], mask), 12345)
+        self.assertIsNone(self.solver.assess(a[None], mask, threshold=30)['key'])
         mask[0, 2] = True
         self.assertEqual(self.solver.recover(a[None], mask), 12345)
         self.assertIsNone(self.solver.recover(np.array([a, b])))
