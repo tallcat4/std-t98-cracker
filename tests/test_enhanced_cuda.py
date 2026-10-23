@@ -35,6 +35,23 @@ class CudaSweepTests(unittest.TestCase):
                 self.assertEqual(retained, count)
                 self.assertEqual([r['initial_state'] for r in expected], [r['initial_state'] for r in bounded])
 
+    def test_shared_graph_pool_matches_fp32_and_owns_outputs(self):
+        from std_t98_cracker.cuda_graph import GraphRunner
+        t = self.engine.t
+        runner = GraphRunner(self.engine.heavy.model, self.engine.heavy.device, 512)
+        runner.warmup()
+        stored = []
+        with t.inference_mode():
+            for size in (1, 17, 65, 257, 512, 3, 128):
+                inputs = t.randint(0, 2, (size, 20, 49), device=self.engine.heavy.device).float()
+                expected = self.engine.heavy.model(inputs)
+                found = runner(inputs)
+                t.testing.assert_close(found, expected, rtol=1e-5, atol=1e-4)
+                self.assertTrue(t.equal(found.argmax(1), expected.argmax(1)))
+                stored.append((found, found.clone()))
+            for found, snapshot in stored:
+                self.assertTrue(t.equal(found, snapshot))
+
 
 if __name__ == '__main__':
     unittest.main()

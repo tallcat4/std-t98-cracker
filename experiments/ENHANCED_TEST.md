@@ -107,3 +107,44 @@ python -m std_t98_cracker.enhanced plugin --mask MASK --offset OFFSET -o build/r
 判定条件の再測定は `python experiments/calibrate_prefilter.py --corpus build/chip-corpus-20261023 --output build/prefilter.json`。
 GPU上でのPN生成を含む測定は `python experiments/benchmark_mask_sweep.py build/random-trial/encrypted.burst --output build/gpu-sweep-bench.json`。
 足切りを全候補が通過する負荷も別に測定し、通常の高速化率と最悪ケースを分けて記録します。
+
+## 時間を離した段階式の探索
+
+```powershell
+python -m std_t98_cracker.enhanced_staged capture.burst --llr capture.llr --known-key 1 --output build/staged-5-00001
+# 軽量版の足切りを緩める場合
+python -m std_t98_cracker.enhanced_staged capture.burst --llr capture.llr --known-key 1 --light-margin -10 --output build/staged-conservative
+```
+
+判定は次の順番です。各区間は5バースト（0.4秒）で、全部で7区間を重複なく選びます。
+
+1. 軽量版で離れた2区間を調べ、どちらかが平文なら通過。
+2. hybridで別の離れた2区間を調べ、どちらかが平文なら通過。
+3. まだ使っていない3区間をhybridで調べ、2区間以上のスコアが正なら候補に残す。
+4. 最後の3スコアの中央値で順位を付け、同点なら平均値を使う。
+
+軽量版・hybridの前段閾値は既定0です。`--light-margin -10`なら軽量版を保守的にできます。
+OR判定の最初の区間で通過した候補は、同段階の2区間目を省略します。
+最後の3区間は必ずすべて評価します。中央値は、1区間だけの極端なスコアに左右されにくい値です。
+モデルも最終スコアもFP32のままです。CUDA GraphでGPUへの指示をまとめ、メモリ領域を共有します。
+比較用に`--no-cuda-graphs`で通常実行にも戻せます。
+
+段階内の開始位置は既定で2秒以上離します（`--gap-seconds`）。
+間隔は保存されたバースト数×80msで換算し、欠落やPTT間の空白の正確な実時間は復元しません。
+1回のPTTを10〜20秒録音する運用を推奨します。理想条件でも最低4.4秒必要で、FEC不良が多い場合はさらに長い録音が必要です。
+区間が足りない場合はエラーにし、同じデータを再利用して続行しません。
+`--block-starts`で7個の開始位置を時系列順に指定することもできます。
+既定の割当は、時系列の1・4・7番目が最後の検証、2・5番目が軽量版、3・6番目が前段hybridです。
+
+各段階の候補数と計算回数、使用区間、最後の3スコアをJSONに残し、128マスク単位で再開できます。
+2/3一致は候補を残す条件で、鍵の一意性や正解を保証するものではありません。
+既知の鍵との整合、別送信での再現、復元された発話を確認して対応を確定します。
+
+```powershell
+python experiments/evaluate_staged.py --corpus build/chip-corpus-20261023 --output build/staged-corpus.json
+python experiments/random_mask_trial.py make --corpus build/chip-corpus-20261023 --seed 981028 --seconds 8 --output build/staged-random
+python experiments/benchmark_staged.py build/staged-random/encrypted.burst --output build/staged-benchmark.json
+# GPUでの一致検査も含めて実行
+$env:T98_RUN_CUDA_TESTS='1'
+python -m unittest discover -s tests
+```
