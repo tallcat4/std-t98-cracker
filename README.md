@@ -38,5 +38,6 @@ LLRがあれば、解析と解除の両方に`--llr capture.llr`を追加しま�
 スコアは正解確率ではありません。リアルタイムにバーストを渡すAPIも用意しています。[閾値・逐次API](LINEAR_SOLVER.md) / [評価結果](experiments/README.md)
 
 秘話系列の追加は[examples/sequence.py](examples/sequence.py)を編集し、`--sequence`で指定します。
+強化秘話の候補比較・実機試験は[実験手順](experiments/ENHANCED_TEST.md)を参照してください。
 受信は[std-t98-receiver](https://github.com/tallcat4/std-t98-receiver)、音声化は[std-t98-vocode](https://github.com/tallcat4/std-t98-vocode)を使います。
 [ファイル形式](FORMAT.md) / [ソース・モデルの由来](PROVENANCE.md)
