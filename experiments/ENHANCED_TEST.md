@@ -1,150 +1,30 @@
 # 強化秘話の実機試験
 
-`experiment/enhanced-scramble` の実験用コマンドです。通常のCLIは変更していません。
-候補番号0は標準系列、1〜16は比較用の系列です。無線機の強化秘話番号1〜15との対応は未確定です。
-[準備試験の結果・GPUベンチ](ENHANCED_RESULTS.md)
+1回のPTT・1設定につき、`.burst`と`.llr`を1組保存します。ファイル名を`ch1-5-00001`のようにすると、チャネル・強化秘話系列・秘話コードを対応付けられます。系列0は通常秘話です。
 
-## 1回の試験
+## 解析と音声確認
 
-CH1で設定を記録し、自然な発話を10〜20秒送信します。1ファイルは1回のPTT・1設定にします。
-receiverで保存した `.burst` と `.llr` を使い、cracker直下で実行します。
+次の例はCH1・強化秘話5・コード00001の録音です。解析には系列・鍵を渡さず、ソルバー誘導AIの回答が設定値に一致するか確認します。
 
 ```powershell
-# 無線機の設定が「5-00001」の場合。17系列すべてを既知の鍵00001で比較。
-python -m std_t98_cracker.enhanced probe capture.burst --llr capture.llr --setting 5-00001 --json build/enhanced/5-00001-a.json
-# 合わない場合、17系列それぞれの全非ゼロ初期状態を探索。
-python -m std_t98_cracker.enhanced probe capture.burst --llr capture.llr --setting 5-00001 --all-keys --json build/enhanced/5-00001-all.json
+python -m std_t98_cracker crack ch1-5-00001.burst --series auto --method guided-ai --llr ch1-5-00001.llr --trace build/ch1-5-00001.jsonl --json build/ch1-5-00001.json
 ```
 
-判定は **FP32のhybridモデルのみ**。既定ではFEC正常の5連続バーストを3組（計1.2秒）使い、
-全候補を全3区間で評価します。軽量モデルによる足切り、平文判定での早期終了はありません。
-`--blocks 5` で区間数、`--block-starts 10,30,50` で元ファイル上の開始バースト位置を指定できます。
-失敗したFECの前後はつなぎません。既定の先頭区間が無音や不安定なら、別の発話区間でも再試験します。
-
-JSONには入力・モデルのハッシュ、候補ごとのスコア、鍵、初期状態、平文の対照スコアを保存します。
-スコアは `plain logit - encrypted logit`（正なら平文判定）で、正解確率ではありません。
-順位は各区間の最小スコア、次に平均スコアで決まります。入力と既存出力は上書きしません。
-
-## 対応表の確認
-
-最初に一致した設定で別の発話をもう一度試します。その後、全15系列について
-`00001`・`12345`・`32767` の3鍵を試し、設定ごとに独立した送信を2回記録します（90録音）。
-秘話OFFと標準秘話も対照として保存します。
+結果の系列・鍵を使って解除し、`std-t98-vocode`でWAVへ変換します。
 
 ```powershell
-$reports = (Get-ChildItem build/enhanced/*-a.json,build/enhanced/*-b.json).FullName
-python -m std_t98_cracker.enhanced summary @reports --json build/enhanced/coverage.json
+python -m std_t98_cracker descramble ch1-5-00001.burst --series 5 --key 1 --llr ch1-5-00001.llr -o build/clear
+python -m std_t98_vocode decode build/clear.burst -o build/ch1-5-00001.wav
 ```
 
-集計は15系列の欠測・鍵の種類・録音数・候補の食い違いを示します。AIの順位だけで対応を確定しません。
-複数鍵で同じ候補系列が再現し、復元鍵が設定値に一致し、実際の発話が復元されることを確認します。
-全鍵探索で別の鍵が出た場合は、系列の候補にはなりますが、表示鍵とオフセットの対応は未確認です。
+送信時に話した内容と復元音声を照合します。系列・コードの組ごとに別の発話を録音し、同じ手順を繰り返します。
 
-## 選んだ候補で音声を確認
+## 確認する設定
 
-```powershell
-# NとKEYをレポートで選んだ候補番号・鍵に置き換える
-python -m std_t98_cracker.enhanced plugin --family N -o build/enhanced/selected.py
-python -m std_t98_cracker descramble capture.burst --llr capture.llr --key KEY --sequence build/enhanced/selected.py -o build/enhanced/clear
-python -m std_t98_vocode decode build/enhanced/clear.burst -o build/enhanced/clear.wav
-```
+各系列で複数のコードを試します。`00001`・`12345`・`32767`に加え、初期状態が32767から1へ折り返すコードの前後を選ぶと、コード変換も確認できます。
 
-追加仮説は `--initialization state`（鍵を初期状態として扱う）、`--skip N`（系列の先頭を捨てる）、
-`--reset frame`（各49-bitフレームでリセット）です。probeとpluginの両方に同じ条件を指定します。
-全初期状態を探索すれば、加算オフセットや系列の位相は状態の並び替えになります。
-既知の表示鍵との対応確認には、既知鍵での試験が必要です。
+通常秘話と秘話OFFを対照にし、同じ設定を別チャネルでも録音します。CH15は呼出チャネルで実機が秘話を無効にするため、秘話OFFの確認に使います。
 
-## 性能と合成データでの確認
+録音をまとめて採点する場合は、[評価スクリプト](README.md#ソルバー誘導aiを評価する)に設定一覧を渡します。
 
-```powershell
-python -m unittest discover -s tests
-python experiments/validate_enhanced.py --corpus build/chip-corpus-20261023 --output build/enhanced-validation --all-keys
-python -m std_t98_cracker.enhanced benchmark --seconds 60 --json build/enhanced-benchmark.json
-```
-
-ベンチはバッチサイズを比較後、PN生成・転送・XOR・重いモデルの判定・スコア回収まで測ります。
-GPU使用率と電力も記録し、2^30候補を1区間／3区間で判定する時間を外挿します。
-録音・FEC・ファイルI/Oを含まず、実際に2^30候補を完走した測定ではありません。
-
-## 任意マスクとオフセットの全探索
-
-候補17系列以外も試す場合は、別コマンドで15-bitフィードバックマスク全32,768通りを探索します。
-各マスクの初期状態は1〜32767すべてを試し、既知の表示鍵から加算オフセットを逆算します。
-計1,073,709,056組です。オフセットはmod 32767なので、0と32767は同じ値です。
-状態0は平文の対照であり、非ゼロ表示鍵のこのオフセット規則では生じません。
-
-```powershell
-# 足切りなし。重いモデルで全候補・全3区間を評価。
-python -m std_t98_cracker.enhanced_sweep capture.burst --llr capture.llr --known-key 1 --output build/mask-search
-# 保守的な足切りを明示的に使う場合（最終判定は同じ重いモデル）。
-python -m std_t98_cracker.enhanced_sweep capture.burst --llr capture.llr --known-key 1 --prefilter-margin -10 --output build/mask-filtered
-# 中断した探索は同じ引数に --resume を追加。完了済み128マスク単位から再開。
-```
-
-`--rank-bound` を追加すると、途中の最小スコアが既存上位20件を下回った候補について、残りの区間を省略します。
-最終的な最小スコアは途中の最小値を超えないため、この省略で上位候補の順位は変わりません。
-同点は省略せず、平均スコアまで比較します。既存チェックポイントにこのオプションを追加して再開できます。
-
-足切りは、3区間の**全部**でFFNNの平文スコアが−10未満のときだけ行います。
-初回コーパス測定では調整用729組・評価用726組の自然音声をすべて残しました。
-RF誤りや未測定の音声を含む入力での保証ではありません。区間数を変えた場合も別途検証が必要です。
-足切りありの処理時間は残った候補数に依存します。すべて残る最悪ケースでは高速化しません。
-
-合成試験はランダムな最大周期マスク・オフセット・鍵・評価用発話を選びます。
-短周期による識別不能を避けるため、生成側のマスクだけは最大周期を条件とします。
-探索側にはマスク・オフセットを渡さず、**すべての15-bitマスク**を試します。
-
-```powershell
-python experiments/random_mask_trial.py make --corpus build/chip-corpus-20261023 --output build/random-trial
-# makeが表示した既知鍵をKEYに入れる。truth.jsonは探索へ渡さない。
-python -m std_t98_cracker.enhanced_sweep build/random-trial/encrypted.burst --known-key KEY --prefilter-margin -10 --rank-bound --output build/random-trial/search
-python experiments/random_mask_trial.py check --truth build/random-trial/truth.json --result build/random-trial/search/result.json --json build/random-trial/check.json
-# 復元したmask/offsetを選び、通常のdescrambleで使用できる。
-python -m std_t98_cracker.enhanced plugin --mask MASK --offset OFFSET -o build/random-trial/selected.py
-```
-
-マスクは15-bit部分を指定します。レポートの`polynomial`は先頭ビット付きの16進表記です。
-判定条件の再測定は `python experiments/calibrate_prefilter.py --corpus build/chip-corpus-20261023 --output build/prefilter.json`。
-GPU上でのPN生成を含む測定は `python experiments/benchmark_mask_sweep.py build/random-trial/encrypted.burst --output build/gpu-sweep-bench.json`。
-足切りを全候補が通過する負荷も別に測定し、通常の高速化率と最悪ケースを分けて記録します。
-
-## 時間を離した段階式の探索
-
-```powershell
-python -m std_t98_cracker.enhanced_staged capture.burst --llr capture.llr --known-key 1 --output build/staged-5-00001
-# 軽量版の足切りを緩める場合
-python -m std_t98_cracker.enhanced_staged capture.burst --llr capture.llr --known-key 1 --light-margin -10 --output build/staged-conservative
-```
-
-判定は次の順番です。各区間は5バースト（0.4秒）で、全部で7区間を重複なく選びます。
-
-1. 軽量版で離れた2区間を調べ、どちらかが平文なら通過。
-2. hybridで別の離れた2区間を調べ、どちらかが平文なら通過。
-3. まだ使っていない3区間をhybridで調べ、2区間以上のスコアが正なら候補に残す。
-4. 最後の3スコアの中央値で順位を付け、同点なら平均値を使う。
-
-軽量版・hybridの前段閾値は既定0です。`--light-margin -10`なら軽量版を保守的にできます。
-OR判定の最初の区間で通過した候補は、同段階の2区間目を省略します。
-最後の3区間は必ずすべて評価します。中央値は、1区間だけの極端なスコアに左右されにくい値です。
-モデルも最終スコアもFP32のままです。CUDA GraphでGPUへの指示をまとめ、メモリ領域を共有します。
-比較用に`--no-cuda-graphs`で通常実行にも戻せます。
-
-段階内の開始位置は既定で2秒以上離します（`--gap-seconds`）。
-間隔は保存されたバースト数×80msで換算し、欠落やPTT間の空白の正確な実時間は復元しません。
-1回のPTTを10〜20秒録音する運用を推奨します。理想条件でも最低4.4秒必要で、FEC不良が多い場合はさらに長い録音が必要です。
-区間が足りない場合はエラーにし、同じデータを再利用して続行しません。
-`--block-starts`で7個の開始位置を時系列順に指定することもできます。
-既定の割当は、時系列の1・4・7番目が最後の検証、2・5番目が軽量版、3・6番目が前段hybridです。
-
-各段階の候補数と計算回数、使用区間、最後の3スコアをJSONに残し、128マスク単位で再開できます。
-2/3一致は候補を残す条件で、鍵の一意性や正解を保証するものではありません。
-既知の鍵との整合、別送信での再現、復元された発話を確認して対応を確定します。
-
-```powershell
-python experiments/evaluate_staged.py --corpus build/chip-corpus-20261023 --output build/staged-corpus.json
-python experiments/random_mask_trial.py make --corpus build/chip-corpus-20261023 --seed 981028 --seconds 8 --output build/staged-random
-python experiments/benchmark_staged.py build/staged-random/encrypted.burst --output build/staged-benchmark.json
-# GPUでの一致検査も含めて実行
-$env:T98_RUN_CUDA_TESTS='1'
-python -m unittest discover -s tests
-```
+[マスク・オフセットと変換式](../README.md#alinco強化秘話の仕組み) / [実機検証の結果](ENHANCED_RESULTS.md)

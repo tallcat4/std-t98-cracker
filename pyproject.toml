@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "std-t98-cracker"
 version = "0.2.0"
-description = "STD-T98 burst analysis: incremental linear evidence and optional AI key search"
+description = "STD-T98 standard and enhanced privacy analysis with solver-guided AI"
 requires-python = ">=3.11"
 dependencies = ["numpy>=1.24"]
 

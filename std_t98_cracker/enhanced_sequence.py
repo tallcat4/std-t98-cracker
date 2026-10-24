@@ -1,15 +1,34 @@
-"""Experimental PN15 candidates; identifiers are not radio setting numbers."""
+"""PN15 sequences: standard index 0, verified radio series 1..15, experimental 16."""
 from dataclasses import dataclass
 
 import numpy as np
 
-from .sequence import THUMBDV_MAP
+from .sequence import Sequence, THUMBDV_MAP
 
 
 MASKS = (0x8003, 0xFB8D, 0xDC6F, 0x8999, 0xF499, 0x9331, 0xAE1D, 0xCC85,
          0xF4F9, 0xE7AD, 0xD9A3, 0x944B, 0xC929, 0xDC71, 0xB62D, 0x8A7B, 0xC2B1)
 OFFSETS = (0, 0x1B95, 0x741B, 0x3679, 0x4D57, 0x55E8, 0x3444, 0x3471,
            0x68A3, 0x7B2C, 0x76FD, 0x7B59, 0x0C53, 0x7769, 0x4597, 0x5748, 0x4AAF)
+
+
+class EnhancedSequence(Sequence):
+    """Radio display code -> PN; solve linear constraints in LFSR state space."""
+
+    def __init__(self, series):
+        if not isinstance(series, int) or not 1 <= series <= 15:
+            raise ValueError('Enhanced series must be 1..15')
+        self.candidate = CandidateSequence(series)
+        super().__init__(self.candidate.generate, f'alinco-enhanced-{series}')
+
+    def linearized(self):
+        # Integer addition modulo 32767 is not linear over GF(2). Only the
+        # LFSR state participates in elimination; translate results afterwards.
+        state_sequence = CandidateSequence(self.candidate.family, initialization='state')
+        return Sequence(state_sequence.generate, self.name + '-state')
+
+    def key_from_linear(self, value):
+        return None if value is None else self.candidate.key_for_state(value)
 
 
 def arbitrary_pn(mask, state):

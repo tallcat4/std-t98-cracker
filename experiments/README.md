@@ -1,86 +1,71 @@
-# ThumbDVを使った線形ソルバーの開発評価
+# 評価データと再現手順
 
-製品CLIとは別の、明示的に実行する開発用スクリプトです。AIやRF受信は呼び出しません。
-実音声、ハードウェア出力、試行ログはGit対象外の`build/`に保存します。
+- [ソルバー誘導AIの性能評価](BLIND_SOLVER_RESULTS.md)：512試行の回答時間、F1、CPU性能。
+- [強化秘話の実機検証](ENHANCED_RESULTS.md)：15系列のマスク・コード変換の確認結果。
+- [実機試験の手順](ENHANCED_TEST.md)：収録、系列・鍵の解析、音声確認。
 
-## コーパス（2026-10-23）
+以下のコマンドは`std-t98-cracker`直下で実行します。音声・NPZ・個別ログの保存先は`build/`です。
 
-ThumbDVのAMBE-3000Rで335発話を実際に符号化しました。自然音声部分は96,722フレーム、
-**32.24分**です。別途、各発話の末尾に1秒のゼロPCMを付け、無音の正例として区別しました。
-ソフトウェアのAMBEエンコーダーは使用していません。
+## コーパス
 
-- JSUT basic5000：調整用100発話、評価用101発話。発話は重複せず、話者は同一です。
-- LibriSpeech：dev-cleanの66発話を調整用、test-cleanの68発話を評価用。
-  使用した話者はそれぞれ29人と33人で、重複はありません。
-- PCMは8 kHz、実効レベルを乱数で-20 / -26 / -32 dBFSに設定。
-  発話ごとにチップをリセットし、ECMODEを0または0x0800に設定しました。
-- RATET=34、49-bit ThumbDV形式。ファームウェアは
-  `V120.E100.XXXX.C106.G514.R009.B0010411.C0020208`。
+ThumbDVのAMBE-3000Rで符号化した335発話、自然音声32.24分（96,722フレーム）を使用しました。
 
-## 最初の鍵を出すまでの評価
+| 音声 | 調整用 | 評価用 | 分割 |
+|---|---:|---:|---|
+| JSUT basic5000 | 100発話 | 101発話 | 発話が重複しないよう分割、話者は同一 |
+| LibriSpeech | 66発話 | 68発話 | dev-clean／test-clean、29人／33人の話者に重複なし |
 
-先頭から1バーストずつ投入し、**最初に採用した鍵**を採点しました。
-後で正解へ変わった場合でも、最初が誤鍵なら誤答です。
-同じ音声を別の乱数鍵で19回と鍵0で1回試し、評価用169発話について合計3,380回測定しました。
-以下の成功発話数は同じ音声の繰り返しを除いた数です。次点との差は6で固定しました。
+PCMは8 kHz、実効レベルは−20・−26・−32 dBFSから選択。発話ごとにチップをリセットし、ECMODEを0または0x0800、RATETを34（49-bit ThumbDV形式）に設定しました。末尾に収録した1秒のゼロPCMは自然音声と区別して保存し、ソルバー誘導AIの評価には自然音声部分を使います。
 
-| 閾値 | 1秒以内に正解 | 最大3.2秒までに正解 | 最初の鍵が誤り |
-|---|---:|---:|---:|
-| 12（比較用） | 139/169（82.2%） | 166/169 | 1発話 |
-| 14（比較用） | 133/169（78.7%） | 167/169 | 0発話 |
-| **20（既定）** | **119/169（70.4%）** | **166/169（98.2%）** | **0発話** |
-| 28（比較用） | 102/169（60.4%） | 155/169 | 0発話 |
+チップのファームウェアは`V120.E100.XXXX.C106.G514.R009.B0010411.C0020208`です。
 
-比較用の閾値は鍵0で測定し、既定20については各発話20通りの鍵で一致を確認しました。
-評価用音声はスコアの計算条件の調整に使用していません。既定20はこの評価の前に固定しました。
-短い発話は自然音声の終端までが上限です。「1秒以内」はバースト単位のため0.96秒まで。
-初期リセット直後のフレームも含む評価で、追加した末尾のゼロPCMは使っていません。
-実際のPTT直後の無線機の動作やUSB遅延を再現したものではありません。
+## ThumbDVで符号化する
 
-途中から受信した状況に近い別評価も行いました。中央0.96秒では87/169発話（51.5%）、
-最大エネルギーの0.96秒では100/169発話（59.2%）を既定値で復元しました。
-この2条件も各20通りの鍵で検証し、先頭からの条件と合わせた10,140試行で早期誤答は0でした。
-最大エネルギー区間の選択には全音声を使っていますが、ソルバーにはその区間の到着済みフレームしか渡しません。
-同じ音声への複数鍵や重なる切り出し区間は独立した音声例ではなく、誤答0は将来の正解保証ではありません。
-
-ランダムビットの独立1,000セッション（各40バースト、seed=98028）を逐次投入したところ、
-既定値で鍵を採用したケースは0でした。状態更新はこのPCのCPUで平均約0.8 ms、99百分位約3.4 msでした。
-この時間は乱数入力での実測で、音声、入力の長さ、候補数によって変わります。
-
-既存の実無線機録音でも、通常発話は12バースト目（0.96秒分）、無音を設けた発話は
-6バースト目（0.48秒分）で、AIと一致する鍵を出し、最終結果も同じでした。
-時間は保存されたバースト基準です。録音・鍵・コーパスはリポジトリに含めません。
-
-## 適用範囲
-
-コーパス評価ではチップの49-bit出力に標準PN系列をXORし、フレーム誤りは加えていません。
-RFの欠落、誤訂正、強い雑音、別の無線機やボコーダー設定まで検証したものではありません。
-**あらゆる発話を1秒以内に解く要件は、まだ満たしていません。**
-スコアは校正された正解確率ではありません。閾値を下げると早期誤答が起き得ます。
-AIは従来どおり別方式として保持し、この開発スクリプトからは使いません。
-
-## 再実行
-
-音声は[JSUT](https://sites.google.com/site/shinnosuketakamichi/publication/jsut)と
-[LibriSpeech](https://www.openslr.org/12/)を別途用意します。音声の再配布はしません。
-チップ制御には、隣の`neural-ambe2`の`neural_ambe.chip`と`neural_ambe.audio`を読み取り専用で利用します。
-使用版は`eeacbd2f4d3336a5f97bbf2c515584ac03d228fe`です。
-この外部ドライバーがない環境では、先に同じAPIのドライバーを用意する必要があります。
+[JSUT](https://sites.google.com/site/shinnosuketakamichi/publication/jsut)と[LibriSpeech](https://www.openslr.org/12/)を用意します。チップ制御には別プロジェクト`neural-ambe2`の`neural_ambe.chip`・`neural_ambe.audio`を使います。測定時のドライバー版は`eeacbd2f4d3336a5f97bbf2c515584ac03d228fe`です。
 
 ```powershell
 python -m pip install numpy scipy soundfile pyserial
-python experiments/capture_chip.py --driver-root ../../neural-ambe2 --source-root ../../neural-ambe2/data/raw --port COM3 --minutes-per-group 8 --output build/chip-corpus-20261023
-python experiments/benchmark_latency.py --corpus build/chip-corpus-20261023 --split train --rounds 3 --threshold 20 --margin 6 --output build/latency-train.json
-python experiments/benchmark_latency.py --corpus build/chip-corpus-20261023 --split eval --rounds 20 --threshold 20 --margin 6 --output build/latency-eval.json
+python experiments/capture_chip.py --driver-root ../../neural-ambe2 --source-root ../../neural-ambe2/data/raw --port COM3 --minutes-per-group 8 --output build/chip-corpus
 ```
 
-`std-t98-cracker`直下から実行します。捕捉計画のseedは98023、逐次評価の鍵生成seedは98027です。
-チップ処理はこのPCで約14分でした。捕捉は同じ計画に限りファイル単位で再開できます。
-評価JSONは上書きしません。各NPZに入力音声のSHA-256と条件、`device.json`にチップとドライバーの情報、
-評価JSONにソルバーのSHA-256を残します。
+各NPZには入力PCM・AMBEビット列・条件・入力音声のSHA-256を保存します。同じ収録計画ならファイル単位で再開できます。
 
-固定窓で最後の判断だけを採点するには`benchmark_linear.py`を使えます。
-両評価スクリプトとも`--solver-file PATH`で保存した比較版を読み込めます。
-今回の逐次評価は`build/latency-eval-final-20.json`、閾値比較は`build/confidence-eval-traces-v2.json`、
-乱数入力の評価は`build/stream-random-negative.json`にあります。
-逐次化前の固定条件版の結果は`build/chip-{train,eval}-{baseline,final}.json`として別に残しています。
+## ambe2-cで符号化する
+
+元のNPZに含まれるPCMをソフトウェアエンコーダーへ渡します。
+
+```powershell
+python experiments/encode_corpus.py --source ../std-t98-vocode/ambe2-c-source --corpus build/chip-corpus --output build/software-corpus
+```
+
+測定にはambe2-c `70e32cbfc1cf5a08f3e9a3fbe41f6a9873cc4ca6`のdouble版・RATET 34を使用し、元のECMODEに合わせて背景雑音モードを設定しました。評価用169発話、自然音声969.72秒の符号化に7.12秒（約136倍速、起動・保存を含みビルドを除く）かかりました。
+
+参照ベクトル4件の一致と、RATET 33からFEC復号した1,404フレームのRATET 34出力との一致を確認しています。
+
+## ソルバー誘導AIを評価する
+
+同じ区間・系列・鍵で2つのエンコーダーを比較し、図を作成します。
+
+```powershell
+python experiments/benchmark_guided_ai.py --chip build/chip-corpus --software build/software-corpus --output build/paired-eval
+python experiments/plot_guided_ai.py build/paired-eval
+```
+
+単一のコーパスを使う場合：
+
+```powershell
+python experiments/evaluate_series_corpus.py build/chip-corpus --method guided-ai --json build/corpus-result.json
+```
+
+実録音を使う場合は、JSON配列に`input`、任意の`llr`、採点用の`series`と`key`を記載します。
+
+```json
+[
+  {"input": "capture.burst", "llr": "capture.llr", "series": 5, "key": 1}
+]
+```
+
+```powershell
+python experiments/evaluate_series.py manifest.json --method guided-ai --json build/guided-result.json
+python experiments/evaluate_series.py manifest.json --method guided-ai --device cpu --threads 1 --json build/cpu-result.json
+```

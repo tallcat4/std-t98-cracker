@@ -46,7 +46,8 @@ def linear_equations(sequence):
 
 class _StrictSilence:
     def __init__(self, sequence=None):
-        self.sequence = sequence or Sequence()
+        self.public_sequence = sequence or Sequence()
+        self.sequence = self.public_sequence.linearized()
         equations = linear_equations(self.sequence)
         self.solvers = []
         for phase in range(4):
@@ -292,8 +293,10 @@ class LinearSession:
             expected = np.array([(coeff & key).bit_count() & 1 for coeff in self.solver.equations])
             if not np.array_equal(self.solver.sequence.bits(key), expected):
                 key = None
-        return dict(key=key, candidate=top['key'] if top else None,
+        display_key = self.solver.public_sequence.key_from_linear
+        display_candidates = [dict(item, key=display_key(item['key'])) for item in candidates[:5]]
+        return dict(key=display_key(key), candidate=display_key(top['key']) if top else None,
                     score=top['score'] if top else 0.0, margin=gap,
                     threshold=self.threshold, required_margin=self.margin,
                     bursts=self.bursts, traffic_seconds=self.bursts*.08,
-                    candidates=candidates[:5])
+                    candidates=display_candidates)

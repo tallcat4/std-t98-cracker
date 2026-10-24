@@ -68,16 +68,16 @@ def select_blocks(frames, valid, count=3, starts=None):
 
 
 class HeavyScorer:
-    def __init__(self, device='cuda', batch_size=512):
+    def __init__(self, device='cuda', batch_size=512, model_path=None, threads=4):
         import torch
         from .ai import _load_checkpoint
         if batch_size < 1:
             raise ValueError('batch size must be positive')
-        torch.set_num_threads(4)
+        torch.set_num_threads(threads)
         self.torch = torch
-        self.device = torch.device(device)
+        self.device = torch.device(('cuda' if torch.cuda.is_available() else 'cpu') if device == 'auto' else device)
         self.batch_size = batch_size
-        self.path = Path(__file__).parent / 'models' / 'ambe2_hybrid.safetensors'
+        self.path = Path(model_path) if model_path else Path(__file__).parent / 'models' / 'ambe2_hybrid.safetensors'
         self.model, metadata = _load_checkpoint(self.path, self.device)
         if metadata.get('model_type') != 'hybrid':
             raise ValueError('this experiment requires the heavy hybrid checkpoint')

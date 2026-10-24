@@ -36,8 +36,23 @@ class Sequence:
     def thumbdv(self, key):
         return self.bits(key).reshape(4, 49)[:, THUMBDV_MAP]
 
+    def linearized(self):
+        """Generator indexed by the GF(2) unknown; normally the key itself."""
+        return self
 
-def load_sequence(path=None):
+    def key_from_linear(self, value):
+        """Convert a solved GF(2) unknown to the externally visible key."""
+        return value
+
+
+def load_sequence(path=None, series=0):
+    if not 0 <= series <= 15:
+        raise ValueError("--series must be 0..15 (0 = standard privacy)")
+    if path is not None and series != 0:
+        raise ValueError("Choose either --series or --sequence")
+    if series:
+        from .enhanced_sequence import EnhancedSequence
+        return EnhancedSequence(series)
     if path is None:
         return Sequence()
     path = Path(path).resolve()

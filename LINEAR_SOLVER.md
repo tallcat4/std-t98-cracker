@@ -1,70 +1,72 @@
-# 逐次線形ソルバー
+# ソルバー誘導AIのAPIと判定基準
 
-PTTごとに状態を作り、バーストが到着するたびに候補鍵と証拠スコアを更新します。
-録音の終了を待たず、設定した閾値と次点との差を満たした時点で`key`を返します。
-無音・無声・有声の条件を利用者が選ぶ必要はありません。
+ソルバー誘導AI（Solver-guided AI）は、音声フレームの線形制約から候補を選び、hybridモデルで最終判定します。バーストごとに証拠を蓄積し、基準を満たすと系列番号と秘話コードを返します。
 
-## API
+## 逐次API
 
 ```python
-from std_t98_cracker.linear import SilenceSolver
+from std_t98_cracker.enhanced import HeavyScorer
+from std_t98_cracker.guided_ai import GuidedAISolver
+from std_t98_cracker.series_solver import SeriesSolver
 
-solver = SilenceSolver()
-session = solver.new_session(threshold=20, margin=6)  # PTT開始
+scorer = HeavyScorer(device='auto')
+solver = GuidedAISolver(SeriesSolver(), scorer)
+session = solver.new_session(threshold=20, margin=6)
 
-# 呼び出し側から、FEC復号済みの1バーストを渡す。
-# burst49: (4, 49)の0/1配列、good4: (4,)のFEC正常フラグ。
+# PTT中、到着した各バーストに対して呼ぶ。
+# burst49: FEC復号済みの(4, 49)の0/1配列（ThumbDV順）
+# good4: 各フレームのFEC正常フラグ、形状(4,)
 status = session.push(burst49, valid=good4)
-print(status['candidate'], status['score'], status['margin'])
-if status['key'] is not None:  # 鍵0も有効。平文を表す。
-    key = status['key']
+if status['key'] is not None:
+    series, key = status['series'], status['key']
 
-session.reset()  # 次のPTT。前の送信の証拠を混ぜない。
+session.reset()  # 次のPTTの前にリセット
 ```
 
-`push()`は各バーストの証拠を追加し、上位5候補と現在の判断を返します。
-`score >= threshold`、`margin >= required_margin`、次点は閾値未満、という条件で採用可能とします。
-確定後も`push()`を続ければ監視できます。後続の矛盾や競合で`key`が`None`に戻ることがあります。
-過去の判断を永久に固定するAPIではありません。採用・監視継続・PTT境界の扱いは呼び出し側が決めます。
-RF入力、PTT検知、音声生成、AIへの切替は行いません。
+`device='auto'`はCUDAが利用可能ならGPU、それ以外はCPUを選びます。CPUを指定する場合は`HeavyScorer(device='cpu', threads=1)`とします。モデルはPTTをまたいで再利用できます。
 
-理想的な無音なら最短1バースト、保存音声0.08秒分で判断できます。
-発話では必要な証拠が揃うまで蓄積し、一定秒数で必ず解ける保証はありません。
-`traffic_seconds`はバースト数×0.08で、USB受信・同期取得・欠落区間などの実時間を含みません。
+各`push()`は、その時点の証拠に基づく判断を返します。続けて入力すると、候補の競合や後続区間の判定によって`key`が`None`へ戻る場合もあります。呼び出し側で回答を採用し、その後も監視を続けられます。
 
-## CLIで録音を再生評価する
+## 処理と判定基準
+
+1. 隣接するAMBEフレームでビットが変わりにくい性質から、LFSR初期状態に対する重み付きGF(2)制約を蓄積します。
+2. Walsh–Hadamard変換で16系列×32768状態を評価し、上位5候補のうち線形スコアが`threshold`以上のものを選びます。
+3. FEC正常な5連続バーストを1区間として、直近の重複しない最大3区間をhybridモデルで判定します。
+4. 2区間なら両方、3区間なら2区間以上が平文判定で、平均スコアが正、かつ次点との差が`margin`以上なら採用します。次点のスコアが負、または次点がない場合は0と比較します。
+
+判定に必要な最小入力は2区間、計10バースト＝音声0.8秒分です。FEC異常のフレームで線形制約の連続性を区切り、AI用の区間は全フレーム正常なバーストから作ります。同じ候補・同じ区間のAI判定はキャッシュします。
+
+| 設定 | 既定値 | 意味 |
+|---|---:|---|
+| `threshold` | 20 | hybridへ渡す候補の線形スコア下限 |
+| `margin` | 6 | hybridの平均スコアで必要な次点との差 |
+
+線形スコアは、ビットの一致度から探索範囲の19 bit分を差し引いた証拠点です。hybridのスコアは`plain logit - encrypted logit`で、正なら平文判定です。どちらも正解確率ではありません。
+
+LFSR初期状態から無線機の表示コードへの変換は内部で行います。秘話なしは全系列に共通するため、`series=0, key=0`にまとめます。
+
+## 主な戻り値
+
+| フィールド | 内容 |
+|---|---|
+| `series`, `key` | 採用した系列・表示コード。保留時は`None`、秘話なしは0 |
+| `candidate_series`, `candidate` | hybridで首位の候補。評価前は`None` |
+| `score`, `margin` | 首位の平均logit差、次点との差 |
+| `candidates` | 評価済み候補と区間別のlogit差 |
+| `linear` | 線形段階の候補・スコア |
+| `verification` | 評価区間・候補選抜の閾値・AI評価数 |
+| `bursts`, `traffic_seconds` | 入力バースト数と音声量（バースト数×0.08秒） |
+
+最上位の`threshold`はhybridの平均スコア基準である0です。設定した線形スコア下限は`verification.linear_candidate_threshold`に入ります。
+
+## 保存ファイルで確認する
 
 ```powershell
-python -m std_t98_cracker crack capture.burst --method linear --llr capture.llr --threshold 20 --margin 6 --trace progress.jsonl --json result.json
+python -m std_t98_cracker crack capture.burst --series auto --method guided-ai --llr capture.llr --threshold 20 --margin 6 --trace progress.jsonl --json result.json
 ```
 
-CLIは保存ファイルを読むオフライン評価です。`--trace`は毎バーストの候補・スコア・判断をJSONLで保存します。
-`first_confirmation`は最初に閾値を満たした鍵・位置、`key`は最後まで確認した判断です。
-両者は後から矛盾が現れた場合に異なります。各出力ファイルは上書きしません。
+`--trace`は毎バーストの判断をJSONLに保存します。結果の`first_confirmation`は最初に採用した回答、`key`は入力全体を処理した時点の判断です。
 
-linearの既定は入力全体を1セッションとして扱います。異なる鍵のPTTを混ぜないでください。
-`--window N`でNバーストごとに明示的に状態をリセットできますが、自動のPTT区切りではありません。
-AIは従来どおり`--method ai`で別途指定し、既定窓は10バーストです。
+既定では1入力を1PTTとして扱います。`--window N`を指定するとNバーストごとに状態をリセットします。`traffic_seconds`は保存された音声量で、計算時間や受信待ち時間とは別です。
 
-## スコアの意味
-
-スコアは**正解確率ではなく証拠点**です。次の条件からGF(2)で候補を生成し、確認します。
-
-- SPEAR由来の厳密な無音条件：22方程式で鍵を解き、全9フィールドを検査。
-  異なる位相の一致を評価し、同じ位相の同じ無音を繰り返すだけでは点を重ねません。
-- b0=119または124、b1=16の無声条件：各位相の残り16通りを求めて照合。
-  4位相が同時に一致すれば早期判断できます。離れた観測には各位相で2バースト以上の裏付けを要求します。
-- 有声条件：3位相のb1=0から、標準系列では残り8通りを生成。
-  b0が0..119かつ位相間の差24以内の候補を集め、4位相を覆う、変化のあるピッチの証拠を評価します。
-  4位相すべてが同時に有声である必要はありません。
-
-厳密無音の点は許容フィールド組合せ数、無声の点は位相数と反復の裏付け、
-有声の点は一様な7-bit値を仮定したときのピッチのまとまり具合を基にします。
-同じピッチ組合せは重複加算せず、制約同士で共有する情報は最大値を使って二重加算を避けます。
-復号後に現れる未使用のピッチ値には減点します。訂正不能と判定されたフレームは証拠にも減点にも使いません。
-採用する鍵は実際の秘話系列生成関数とも照合します。
-
-実際の音声には時間相関があるため、この一様モデルをそのまま確率と解釈できません。
-閾値を下げれば早く出せる場合が増えますが、誤鍵も出やすくなります。
-既定は閾値20・次点との差6。今回の調整データでは閾値12で早期誤答を確認しています。
-評価方法・閾値別の実測値は[experiments/README.md](experiments/README.md)を参照してください。
+[性能評価](experiments/BLIND_SOLVER_RESULTS.md) / [強化秘話の仕組み](README.md#alinco強化秘話の仕組み)
